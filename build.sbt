@@ -1,4 +1,4 @@
-name := "url-file-generator"
+name := "url-file-processor"
 
 version := "0.1"
 
