@@ -7,32 +7,40 @@ import scala.annotation.tailrec
 import scala.concurrent.duration._
 import scala.concurrent.{Await, Future}
 import scala.io.Source
-import scala.util.Try
 
-object Main extends App {
-  val dirName = "src/main/resources/inputData"
+object Main {
+  var RealData = true
+  lazy val dirName: String =
+    if (RealData) "src/main/resources/inputData"
+    else "src/test/resources/testData"
   val OK = 200
-  var BatchSize = 10000
-  val timeout = 30.second
+  var BatchSize = 5000
+  private val timeout = 300.millis
   var total, done = 0
 
-  Http.defaultClientBuilder.setIoThreadsCount(4)
+  def main(args: Array[String]): Unit = {
+    Http.defaultClientBuilder.setIoThreadsCount(4)
 
-  val start = System.currentTimeMillis()
+    val startTime = System.currentTimeMillis()
 
-  Files.list(Paths.get(dirName)).forEach(processFile)
+    val files = Files.list(Paths.get(dirName))
+    files.forEach(file => consumeStream(processFile(file)))
 
-  val end = (System.currentTimeMillis() - start) / 1000.0
-  println(f"\ntime: $end%.2f sec, ${total / end}%.0f op/s")
+    val endTime = (System.currentTimeMillis() - startTime) / 1000.0
+    println(f"\ntime: $endTime%.2f sec, ${total / endTime}%.0f op/s")
 
-  Http.default.shutdown()
+    Http.default.shutdown()
 
-  def processFile(path: Path): Unit = {
+  }
+
+
+  def processFile(path: Path): Stream[String] = {
     try {
-      val stream = Source.fromFile(path.toUri, "utf-8").getLines.toStream
-      consumeStream(stream)
+      Source.fromFile(path.toUri, "utf-8").getLines.toStream
     } catch {
-      case e: Exception => println(e)
+      case e: Exception =>
+        println(e)
+        Stream()
     }
   }
 
@@ -40,20 +48,36 @@ object Main extends App {
   def consumeStream(s: Stream[String]): Unit = {
     if (s.nonEmpty) {
       val (head, tail) = s.splitAt(BatchSize)
-      batchProcess(head.toVector)
+      asyncBatch(head)
+//      syncBatch(head)
       consumeStream(tail)
     }
   }
 
-  def batchProcess(s: Seq[String]): Unit = {
-    val f = Future.traverse(s)(asyncHttp).map(_.count(_ == OK))
-    val count = Await.result(f, timeout) // TODO: switch to async when "Too many open files" bug fixed
-    total += s.size
-    done += count
+  def asyncBatch(seq: Seq[String]): Unit = {
+    val f = Future.traverse(seq)(asyncHttp).map(_.count(_ == OK))
+    val count = Await.result(f, timeout)
+    report(seq.size, count)
+  }
+
+  def syncBatch(seq: Seq[String]): Unit = {
+    val codes = seq.par.map(syncHttp)
+    val count = codes.count(_ == OK)
+    report(seq.size, count)
+  }
+
+  def report(size: Int, success: Int): Unit = {
+    total += size
+    done += success
     val error = total - done
     println(f"sum: $total%7s     ok: $done%7s     err: $error%5s")
   }
 
   @inline
   def asyncHttp(s: String): Future[Int] = Http.default(url(s)).map(_.getStatusCode)
+
+  def syncHttp(s: String): Int = {
+    val res = Http.default.client.prepareGet(s).execute().toCompletableFuture.get
+    res.getStatusCode
+  }
 }
