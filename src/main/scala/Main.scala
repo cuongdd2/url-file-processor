@@ -7,6 +7,7 @@ import scala.annotation.tailrec
 import scala.concurrent.duration._
 import scala.concurrent.{Await, Future}
 import scala.io.Source
+import scala.util.Try
 
 object Main {
   var RealData = true
@@ -15,7 +16,7 @@ object Main {
     else "src/test/resources/testData"
   val OK = 200
   var BatchSize = 5000
-  private val timeout = 300.millis
+  private val timeout = 500.millis
   var total, done = 0
 
   def main(args: Array[String]): Unit = {
@@ -30,18 +31,10 @@ object Main {
     println(f"\ntime: $endTime%.2f sec, ${total / endTime}%.0f op/s")
 
     Http.default.shutdown()
-
   }
 
-
   def processFile(path: Path): Stream[String] = {
-    try {
-      Source.fromFile(path.toUri, "utf-8").getLines.toStream
-    } catch {
-      case e: Exception =>
-        println(e)
-        Stream()
-    }
+    Try(Source.fromFile(path.toUri, "utf-8").getLines.toStream) getOrElse Stream()
   }
 
   @tailrec
@@ -49,20 +42,20 @@ object Main {
     if (s.nonEmpty) {
       val (head, tail) = s.splitAt(BatchSize)
       asyncBatch(head)
-//      syncBatch(head)
+      //      syncBatch(head)
       consumeStream(tail)
     }
   }
 
   def asyncBatch(seq: Seq[String]): Unit = {
-    val f = Future.traverse(seq)(asyncHttp).map(_.count(_ == OK))
-    val count = Await.result(f, timeout)
+    val countF = Future.traverse(seq)(asyncHttp).map(_.count(_ == OK))
+    val count = Try(Await.result(countF, timeout)).getOrElse(0)
     report(seq.size, count)
   }
 
   def syncBatch(seq: Seq[String]): Unit = {
-    val codes = seq.par.map(syncHttp)
-    val count = codes.count(_ == OK)
+    val statusCodes = seq.par.map(syncHttp)
+    val count = statusCodes.count(_ == OK)
     report(seq.size, count)
   }
 
